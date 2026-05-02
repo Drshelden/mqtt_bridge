@@ -55,6 +55,17 @@ except Exception as exc:
 def health():
     return jsonify({"ok": True, "mqtt_connected": mqtt_connected}), 200
 
+
+@app.get("/")
+def index():
+    return jsonify(
+        {
+            "service": "dt-mqtt-bridge",
+            "status": "running",
+            "endpoints": ["/health", "/dt-webhook"],
+        }
+    ), 200
+
 @app.route("/dt-webhook", methods=["POST"])
 def dt_webhook():
     event = request.get_json(silent=True)
