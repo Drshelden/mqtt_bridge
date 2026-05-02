@@ -68,7 +68,21 @@ def index():
 
 @app.route("/dt-webhook", methods=["POST"])
 def dt_webhook():
+    logger.info(
+        "Webhook request received content_type=%s content_length=%s",
+        request.content_type,
+        request.content_length,
+    )
+
     event = request.get_json(silent=True)
+    if event is None:
+        # Some senders post JSON with non-application/json content types.
+        raw_body = request.get_data(as_text=True)
+        try:
+            event = json.loads(raw_body) if raw_body else None
+        except json.JSONDecodeError:
+            event = None
+
     if event is None:
         logger.warning("Webhook received non-JSON payload")
         return jsonify({"status": "error", "message": "Expected JSON body"}), 400
