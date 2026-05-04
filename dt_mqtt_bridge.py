@@ -16,6 +16,7 @@ MQTT_TOPIC = os.getenv(
     "MQTT_TOPIC",
     f"{MQTT_USER}/feeds/rfidscans" if MQTT_USER else "rfidscans",
 )
+PAYLOAD_FORMAT_VERSION = "name_value_eventid_v1"
 
 mqtt_connected = False
 
@@ -50,13 +51,21 @@ def extract_event_value(data, event_type):
 
     if event_type in data:
         event_payload = data[event_type]
-        if isinstance(event_payload, dict) and "value" in event_payload:
-            return event_payload.get("value")
-        if isinstance(event_payload, dict) and "state" in event_payload:
-            return event_payload.get("state")
-        return event_payload
+        if isinstance(event_payload, dict):
+            if "state" in event_payload:
+                return event_payload.get("state")
+            if "value" in event_payload:
+                return event_payload.get("value")
+            # Last-resort extraction from nested event payload.
+            for nested_value in event_payload.values():
+                if isinstance(nested_value, (str, int, float, bool)):
+                    return nested_value
+        if isinstance(event_payload, (str, int, float, bool)):
+            return event_payload
 
     for value in data.values():
+        if isinstance(value, dict) and "state" in value:
+            return value.get("state")
         if isinstance(value, dict) and "value" in value:
             return value.get("value")
         if isinstance(value, (str, int, float, bool)):
@@ -111,7 +120,13 @@ except Exception as exc:
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "mqtt_connected": mqtt_connected}), 200
+    return jsonify(
+        {
+            "ok": True,
+            "mqtt_connected": mqtt_connected,
+            "payload_format": PAYLOAD_FORMAT_VERSION,
+        }
+    ), 200
 
 
 @app.get("/")
@@ -121,6 +136,7 @@ def index():
             "service": "dt-mqtt-bridge",
             "status": "running",
             "endpoints": ["/health", "/dt-webhook"],
+            "payload_format": PAYLOAD_FORMAT_VERSION,
         }
     ), 200
 
@@ -202,6 +218,7 @@ def dt_webhook():
             "status": "ok",
             "published_topic": topic,
             "published_payload": payload,
+            "payload_format": PAYLOAD_FORMAT_VERSION,
             "mqtt_connected": mqtt_connected,
             "publish_rc": publish_info.rc,
         }
