@@ -52,6 +52,8 @@ def extract_event_value(data, event_type):
         event_payload = data[event_type]
         if isinstance(event_payload, dict) and "value" in event_payload:
             return event_payload.get("value")
+        if isinstance(event_payload, dict) and "state" in event_payload:
+            return event_payload.get("state")
         return event_payload
 
     for value in data.values():
@@ -161,7 +163,7 @@ def dt_webhook():
     sensor_name = extract_sensor_name(event, event_body, metadata)
     sensor_value = extract_event_value(event_body.get("data", {}), event_type)
     event_id = extract_event_id(event, event_body, metadata)
-    payload = f"{sensor_name},{event_type},{sensor_value},{event_id}"
+    payload = f"{sensor_name},{sensor_value},{event_id}"
 
     topic = MQTT_TOPIC
 
