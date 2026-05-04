@@ -20,60 +20,60 @@ MQTT_TOPIC = os.getenv(
 mqtt_connected = False
 
 
-def extract_sensor_name(event):
-    labels = event.get("labels")
-    if isinstance(labels, dict):
-        for key in ("name", "sensor", "device"):
-            value = labels.get(key)
-            if value:
-                return str(value)
+def extract_sensor_name(payload, event, metadata):
+    for source in (payload, event, metadata):
+        if not isinstance(source, dict):
+            continue
 
-    for key in ("targetName", "sensorName", "deviceName"):
-        value = event.get(key)
-        if value:
-            return str(value).split("/")[-1]
+        labels = source.get("labels")
+        if isinstance(labels, dict):
+            for key in ("name", "sensor", "device"):
+                value = labels.get(key)
+                if value:
+                    return str(value)
+
+        for key in ("targetName", "sensorName", "deviceName", "name"):
+            value = source.get(key)
+            if value:
+                return str(value).split("/")[-1]
+
+    device_id = metadata.get("deviceId") if isinstance(metadata, dict) else None
+    if device_id:
+        return str(device_id)
 
     return "unknown"
 
 
-def extract_sensor_value(payload):
-    if isinstance(payload, (str, int, float, bool)):
-        return payload
+def extract_event_value(data, event_type):
+    if not isinstance(data, dict):
+        return data
 
-    if isinstance(payload, list):
-        for item in payload:
-            value = extract_sensor_value(item)
-            if value is not None:
-                return value
-        return None
+    if event_type in data:
+        event_payload = data[event_type]
+        if isinstance(event_payload, dict) and "value" in event_payload:
+            return event_payload.get("value")
+        return event_payload
 
-    if not isinstance(payload, dict):
-        return None
+    for value in data.values():
+        if isinstance(value, dict) and "value" in value:
+            return value.get("value")
+        if isinstance(value, (str, int, float, bool)):
+            return value
 
-    preferred_keys = (
-        "value",
-        "state",
-        "temperature",
-        "humidity",
-        "pressure",
-        "illuminance",
-        "count",
-    )
-    for key in preferred_keys:
-        if key in payload:
-            value = extract_sensor_value(payload[key])
-            if value is not None:
-                return value
+    return "unknown"
 
-    for key, value in payload.items():
-        if key in {"eventId", "eventType", "labels", "metadata", "timestamp"}:
+
+def extract_event_id(payload, event, metadata):
+    for source in (event, payload, metadata):
+        if not isinstance(source, dict):
             continue
 
-        extracted = extract_sensor_value(value)
-        if extracted is not None:
-            return extracted
+        for key in ("eventId", "id", "deviceId"):
+            value = source.get(key)
+            if value:
+                return str(value)
 
-    return None
+    return "unknown"
 
 
 def on_connect(client, userdata, flags, reason_code, properties=None):
@@ -143,18 +143,25 @@ def dt_webhook():
         logger.warning("Webhook received non-JSON payload")
         return jsonify({"status": "error", "message": "Expected JSON body"}), 400
 
-    if isinstance(event, dict):
-        event_type = event.get("eventType", "unknown")
-        target = event.get("targetName", "unknown")
-    else:
-        event_type = "unknown"
-        target = "unknown"
+    if not isinstance(event, dict):
+        logger.warning("Webhook received JSON payload that was not an object")
+        return jsonify({"status": "error", "message": "Expected JSON object"}), 400
+
+    event_body = event.get("event", event)
+    metadata = event.get("metadata", {})
+    if not isinstance(event_body, dict):
+        logger.warning("Webhook received object without event body")
+        return jsonify({"status": "error", "message": "Expected event object"}), 400
+
+    event_type = event_body.get("eventType", "unknown")
+    target = event_body.get("targetName", event.get("targetName", "unknown"))
 
     # targetName usually contains project/device path info
     safe_target = target.replace("/", "_")
-    sensor_name = extract_sensor_name(event)
-    sensor_value = extract_sensor_value(event.get("data", event))
-    payload = f"{sensor_name},{sensor_value if sensor_value is not None else 'unknown'}"
+    sensor_name = extract_sensor_name(event, event_body, metadata)
+    sensor_value = extract_event_value(event_body.get("data", {}), event_type)
+    event_id = extract_event_id(event, event_body, metadata)
+    payload = f"{sensor_name},{event_type},{sensor_value},{event_id}"
 
     topic = MQTT_TOPIC
 
@@ -166,11 +173,12 @@ def dt_webhook():
     )
 
     logger.info(
-        "Webhook received event_type=%s target=%s sensor_name=%s sensor_value=%s topic=%s payload=%s mqtt_connected=%s publish_rc=%s",
+        "Webhook received event_type=%s target=%s sensor_name=%s sensor_value=%s event_id=%s topic=%s payload=%s mqtt_connected=%s publish_rc=%s",
         event_type,
         safe_target,
         sensor_name,
         sensor_value,
+        event_id,
         topic,
         payload,
         mqtt_connected,
