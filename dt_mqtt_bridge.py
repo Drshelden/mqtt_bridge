@@ -20,6 +20,62 @@ MQTT_TOPIC = os.getenv(
 mqtt_connected = False
 
 
+def extract_sensor_name(event):
+    labels = event.get("labels")
+    if isinstance(labels, dict):
+        for key in ("name", "sensor", "device"):
+            value = labels.get(key)
+            if value:
+                return str(value)
+
+    for key in ("targetName", "sensorName", "deviceName"):
+        value = event.get(key)
+        if value:
+            return str(value).split("/")[-1]
+
+    return "unknown"
+
+
+def extract_sensor_value(payload):
+    if isinstance(payload, (str, int, float, bool)):
+        return payload
+
+    if isinstance(payload, list):
+        for item in payload:
+            value = extract_sensor_value(item)
+            if value is not None:
+                return value
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    preferred_keys = (
+        "value",
+        "state",
+        "temperature",
+        "humidity",
+        "pressure",
+        "illuminance",
+        "count",
+    )
+    for key in preferred_keys:
+        if key in payload:
+            value = extract_sensor_value(payload[key])
+            if value is not None:
+                return value
+
+    for key, value in payload.items():
+        if key in {"eventId", "eventType", "labels", "metadata", "timestamp"}:
+            continue
+
+        extracted = extract_sensor_value(value)
+        if extracted is not None:
+            return extracted
+
+    return None
+
+
 def on_connect(client, userdata, flags, reason_code, properties=None):
     global mqtt_connected
     mqtt_connected = reason_code == 0
@@ -96,22 +152,27 @@ def dt_webhook():
 
     # targetName usually contains project/device path info
     safe_target = target.replace("/", "_")
+    sensor_name = extract_sensor_name(event)
+    sensor_value = extract_sensor_value(event.get("data", event))
+    payload = f"{sensor_name},{sensor_value if sensor_value is not None else 'unknown'}"
 
     topic = MQTT_TOPIC
 
     publish_info = client.publish(
         topic,
-        json.dumps(event),
+        payload,
         qos=1,
         retain=False
     )
 
     logger.info(
-        "Webhook received event_type=%s target=%s topic=%s payload_bytes=%s mqtt_connected=%s publish_rc=%s",
+        "Webhook received event_type=%s target=%s sensor_name=%s sensor_value=%s topic=%s payload=%s mqtt_connected=%s publish_rc=%s",
         event_type,
         safe_target,
+        sensor_name,
+        sensor_value,
         topic,
-        len(json.dumps(event)),
+        payload,
         mqtt_connected,
         publish_info.rc,
     )
@@ -130,6 +191,7 @@ def dt_webhook():
         {
             "status": "ok",
             "published_topic": topic,
+            "published_payload": payload,
             "mqtt_connected": mqtt_connected,
             "publish_rc": publish_info.rc,
         }
